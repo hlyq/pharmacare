@@ -1,44 +1,126 @@
 # Pharmacare Drug Cost/Coverage Calculator
 # Written by Henry Liang
-# Last updated 25/5/2013
+# Last updated 16/7/2013
 
-print "\nThis program will help calculate Pharmacare coverage."
+# Import modules and define functions
 
-# Define Possible Yes/No Answers
+import xlrd
+import glob
+import datetime
+from urllib import urlretrieve
+from os import remove
+
+def locate_LCARow(DIN):
+
+    for i in range(LCABook.nrows):
+        if float(DIN) == LCABook.cell_value(i, 1):
+            return i
+            break
+
+
+def locate_RDPRow(DIN):
+
+    for i in range(RDPBook.nrows):
+        if float(DIN) == RDPBook.cell_value(i, 1):
+            return i
+            break
+
+
+def locate_LCAPrice(DIN):
+
+    cur_row = drug_LCARow
+    drug_LCAPrice = LCABook.cell_value(cur_row, 12)
+    if drug_LCAPrice == "":
+        drug_LCAPrice = LCABook.cell_value(cur_row, 11)
+    return drug_LCAPrice
+
+def display(a, b, c, d):
+
+    print '-' * 20
+    print '\nResults:\n'
+    print "The eligible cost for Pharmacare coverage is $%.3f" % a,
+    print "based\non the maximum eligible $%.3f dispensing fee." % b
+    print "\nPharmacare will pay $%.3f towards this transaction." % c
+    print "\nPatient pays $%.3f.\n" % d
+
+# Define RDP Prices and possible yes/no answers
 
 yes = set(['yes', 'y', 'ye', 'Yes', 'Ye', 'Y'])
 nope = set(['no', 'n', 'No', 'N'])
 
+drug_RDPPrice_table = {
+    'Ace Inhibitors ': 28.206,
+    'Dihdropyridines': 24.777,
+    'H2 Antagonists ': 11.028,
+    'NSAIDs         ': 8.748,
+    'Oral Nitrates  ': 11.112,
+    }
+
+# Sets the xls file names
+cur_date = datetime.date.today().strftime("%B%Y")
+
+LCAWorkbookFN = 'books\\lca-current%s.xls' % cur_date
+RDPWorkBookFN = 'books\\rdp-current%s.xls' % cur_date
+
+# Checks each xls file and deletes files from previous dates
+local_xls_files = glob.glob("books\\*.xls")
+for i in local_xls_files:
+    if i != LCAWorkbookFN and i != RDPWorkbookFN:
+        remove(i)
+
+# Gets xls files from health.gov.bc.ca
+# urlretrieve won't replace a file if one with the same name exists
+urlretrieve('http://www.health.gov.bc.ca/pharmacare/lca/lca-current.xls',
+    LCAWorkbookFN)
+urlretrieve('http://www.health.gov.bc.ca/pharmacare/lca/rdp-current.xls',
+    RDPWorkbookFN)
+
+# Open the xls files and establishes the sheet to work with
+LCAWorkbook = xlrd.open_workbook(LCAWorkbookFN)
+RDPWorkBook = xlrd.open_workbook(RDPWorkBookFN)
+LCABook = LCAWorkbook.sheet_by_index(0)
+RDPBook = RDPWorkBook.sheet_by_index(0)
+
+# ---------- Begin Program ----------
+
+print "\nThis program will help calculate Pharmacare coverage."
+
 # Input
 
-# -- Drug Name
-print "\nWhat is the drug name and strength?"
-drug_name = raw_input("> ")
+# -- Locate the drug and position in LCA Book
+print "\nWhat is the DIN of the drug?"
+drug_DIN = float(raw_input("> "))
+
+drug_LCARow = locate_LCARow(drug_DIN)
+drug_name = LCABook.cell_value((drug_LCARow), 3)
+drug_genname = LCABook.cell_value((drug_LCARow), 2)
+
+print "\nThe drug is %s (%s)" % (drug_name, drug_genname)
 
 # -- Quantity Patient is Receiving
 print "\nHow many tablets (in total) is the patient receiving?"
 drug_quantity = int(raw_input("> "))
 
 # -- LCA price
-print "\nWhat is the LCA price of the drug?"
-LCA_price = float(raw_input("> $"))
+drug_LCAPrice = locate_LCAPrice(drug_DIN)
 
 # -- Reference Drug Program
-print "\nIs %s in the Reference Drug Program? (yes/no)" % drug_name
-RDP_status = raw_input("> ")
+RDP_status = LCABook.cell_value((drug_LCARow), 7)
 
-if RDP_status in yes:
+if RDP_status == 'RDP':
 
-    print "\nIs %s a Reference Drug? (yes/no)" % drug_name
-    refdrug_status = raw_input("> ")
+    # -- If drug is in RDP, check price based on drug class
+    drug_RDPRow = locate_RDPRow(drug_DIN)
+    drug_RDPClass = str(RDPBook.cell_value((drug_RDPRow), 0))
 
-    if refdrug_status in nope:
+    drug_RDPPrice = drug_RDPPrice_table[drug_RDPClass]
 
-        print "\nWhat is the price for 30 days?"
-        RDP_price = float(raw_input("> "))
+    if drug_RDPPrice == "":
+        print 'Error: RDP Price not defined at this point'
 
-        print "\nHow many days is this prescription for?"
-        days_supply = float(raw_input("> "))
+    # -- Check days supply
+    print "\nHow many days does this prescription supply?"
+    days_supply = int(raw_input("> "))
 
 # -- Actual Acquisition Cost (AAC)
 print "\nWhat is the Actual Acquisition Cost (AAC) of the drug?"
@@ -61,10 +143,10 @@ if deduc_status in nope:
     elig_coeff = 0.00
 else:
     # -- Elder Status
-    print "\nWas the patient born prior to 1939? (yes/no)"
-    pt_iselderly = raw_input("> ")
+    print "\nIn which year was the patient born?"
+    pt_birthyear = raw_input("> ")
 
-    if pt_iselderly in yes:
+    if pt_birthyear < 1939:
         elig_coeff = 0.75
     else:
         elig_coeff = 0.70
@@ -75,45 +157,36 @@ else:
     if fammax_status in yes:
         elig_coeff = 1.00
 
-# Final Calculation
+# Math
 
-if RDP_status in yes and refdrug_status in nope:
-    elig_cost = ((RDP_price * days_supply) / 30) + pcare_elig_disp_fee
+if RDP_status == 'RDP':
+    elig_cost = ((drug_RDPPrice * days_supply) / 30) + pcare_elig_disp_fee
 else:
-    elig_cost = LCA_price * drug_quantity + pcare_elig_disp_fee
+    elig_cost = drug_LCAPrice * drug_quantity + pcare_elig_disp_fee
 
 total_pcare = elig_cost * elig_coeff
+
 pt_pays = ((AAC * drug_quantity) + disp_fee) - total_pcare
 
 if pt_pays < 0:
     pt_pays = 0
 
-# Display Results
-
-def display(a, b, c, d):
-    print '-' * 20
-    print '\nResults:\n'
-    print "The eligible cost for Pharmacare coverage is $%.3f" % a,
-    print "based\non the maximum eligible $%.3f dispensing fee." % b
-
-    print "\nPharmacare will pay $%.3f towards this transaction." % c
-
-    print "\nPatient pays $%.3f.\n" % d
+# -- Display Results
 
 display(elig_cost, pcare_elig_disp_fee, total_pcare, pt_pays)
 
-# Change Variable types (you can only write strings)
+# -- Change Variable types (you can only write strings)
 
 drug_quantity_str = str(drug_quantity)
 elig_cost_str = str(elig_cost)
 pcare_elig_str = str(pcare_elig_disp_fee)
 total_pcare_str = str(total_pcare)
 pt_pays_str = str(pt_pays)
-if refdrug_status in nope:
+if RDP_status == 'RDP':
     days_supply_str = str(days_supply)
-    RDP_price_str = str(RDP_price)
+    drug_RDPPrice_str = str(drug_RDPPrice)
 
-# Write Results to File
+# -- Write Results to File
 
 resultfile_name = "%sTABS %s.txt" % (drug_quantity, drug_name)
 
@@ -121,13 +194,13 @@ resultfile = open(resultfile_name, 'w')
 
 resultfile.write(drug_name)
 resultfile.write("\n")
-resultfile.write(drug_quantity_str)
+resultfile.write(drug_quantity_str) 
 resultfile.write(" Tablets\n")
-if RDP_status in yes and refdrug_status in nope:
+if RDP_status == 'RDP':
     resultfile.write("Prescription for ")
     resultfile.write(days_supply_str)
     resultfile.write(" days at ")
-    resultfile.write(RDP_price_str)
+    resultfile.write(drug_RDPPrice_str)
     resultfile.write(" per 30 days")
 resultfile.write("\nThe eligible cost for Pharmacare coverage is ")
 resultfile.write(elig_cost_str)
